@@ -99,12 +99,6 @@ bool APJR_CoopWorldController::PJR_RequestPickupFromLocal(AActor* ItemActor, AAc
 		return false;
 	}
 
-	if (!PJR_IsMasterClient())
-	{
-		PJR_OnPickupRejected(ItemActor, RequestingPlayer, TEXT("Solo el Master Client puede aprobar acciones del mundo."));
-		return false;
-	}
-
 	const float Distance = FVector::Dist(RequestingPlayer->GetActorLocation(), ItemActor->GetActorLocation());
 	if (Distance > MaxPickupDistance)
 	{
@@ -154,7 +148,7 @@ void APJR_CoopWorldController::PJR_OnPickupApproved_Implementation(AActor* ItemA
 		}
 	}
 
-	Item->PJR_SetCarried(true, PlayerId);
+	Item->PJR_SetCarried(true, PlayerId, Cast<ACharacter>(RequestingPlayer));
 }
 
 // Implementacion base: muestra el motivo de rechazo en el log de Unreal.

@@ -44,13 +44,22 @@ public:
 	/** Returns the Camera Boom component **/
 	FORCEINLINE class USpringArmComponent* GetCameraBoom() const { return CameraBoom; }
 
-	// Busca el ingrediente libre mas cercano y pide al CoopWorldController que lo apruebe.
+	// Busca el ingrediente libre mas cercano y envia la peticion al servidor.
 	UFUNCTION(BlueprintCallable, Category = "Coop|Pickup")
 	void PJR_TryPickupNearest();
 
 	// Suelta el ingrediente que este jugador lleva actualmente.
 	UFUNCTION(BlueprintCallable, Category = "Coop|Pickup")
 	void PJR_TryDropCarried();
+
+private:
+	// RPC servidor: valida y ejecuta el pickup con autoridad para que se replique a todos.
+	UFUNCTION(Server, Reliable)
+	void Server_RequestPickup(APJR_CookPickupItem* Item);
+
+	// RPC servidor: suelta el item con autoridad.
+	UFUNCTION(Server, Reliable)
+	void Server_DropCarried(APJR_CookPickupItem* Item);
 
 };
 

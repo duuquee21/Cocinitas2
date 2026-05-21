@@ -71,17 +71,6 @@ void ACocinitas2Character::PJR_TryPickupNearest()
 
 	if (GEngine) GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor::Yellow, TEXT("[E] TryPickupNearest ejecutado"));
 
-	// Busca el CoopWorldController en el nivel
-	TArray<AActor*> Controllers;
-	UGameplayStatics::GetAllActorsOfClass(World, APJR_CoopWorldController::StaticClass(), Controllers);
-	if (Controllers.Num() == 0)
-	{
-		if (GEngine) GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor::Red, TEXT("[E] No hay CoopWorldController en el nivel!"));
-		return;
-	}
-	APJR_CoopWorldController* WorldController = Cast<APJR_CoopWorldController>(Controllers[0]);
-	if (!WorldController) return;
-
 	// Encuentra el ingrediente libre mas cercano
 	TArray<AActor*> Items;
 	UGameplayStatics::GetAllActorsOfClass(World, APJR_CookPickupItem::StaticClass(), Items);
@@ -119,8 +108,26 @@ void ACocinitas2Character::PJR_TryPickupNearest()
 	if (GEngine) GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor::Green,
 		FString::Printf(TEXT("[E] Item encontrado a %.1f unidades. MaxDist=%.1f"), NearestDist, 180.0f));
 
-	// Pide al CoopWorldController que valide y apruebe el pickup
-	WorldController->PJR_RequestPickupFromLocal(NearestItem, this);
+	// Envia la peticion al servidor para que ejecute el pickup con autoridad
+	Server_RequestPickup(NearestItem);
+}
+
+void ACocinitas2Character::Server_RequestPickup_Implementation(APJR_CookPickupItem* Item)
+{
+	if (!Item || Item->PJR_IsCarried()) return;
+
+	UWorld* World = GetWorld();
+	if (!World) return;
+
+	// Busca el CoopWorldController para usar su MaxPickupDistance
+	TArray<AActor*> Controllers;
+	UGameplayStatics::GetAllActorsOfClass(World, APJR_CoopWorldController::StaticClass(), Controllers);
+	if (Controllers.Num() == 0) return;
+	APJR_CoopWorldController* WorldController = Cast<APJR_CoopWorldController>(Controllers[0]);
+	if (!WorldController) return;
+
+	// El servidor valida y aprueba: esto llama PJR_SetCarried con autoridad y replica a todos
+	WorldController->PJR_RequestPickupFromLocal(Item, this);
 }
 
 void ACocinitas2Character::PJR_TryDropCarried()
@@ -145,8 +152,15 @@ void ACocinitas2Character::PJR_TryDropCarried()
 		if (!Item) continue;
 		if (Item->PJR_IsCarried() && Item->PJR_GetCarriedByPlayerId() == MyPlayerId)
 		{
-			Item->PJR_SetCarried(false, -1);
+			// Envia la peticion al servidor para que suelte con autoridad
+			Server_DropCarried(Item);
 			return;
 		}
 	}
+}
+
+void ACocinitas2Character::Server_DropCarried_Implementation(APJR_CookPickupItem* Item)
+{
+	if (!Item) return;
+	Item->PJR_SetCarried(false, -1, nullptr);
 }
