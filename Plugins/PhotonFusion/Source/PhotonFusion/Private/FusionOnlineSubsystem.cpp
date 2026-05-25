@@ -51,6 +51,14 @@ namespace FusionCVars
 		TEXT("0 - Use Project Settings LoadMapAutomatically setting, 1 - Force Load Map Automatically, 2 - Do not Load Map Automatically"),
 		ECVF_Default
 	);
+
+	bool DisableGameStateNetworking = false;
+	static FAutoConsoleVariableRef CVarFusionDisableGameStateNetworking(
+		TEXT("Fusion.DisableGameStateNetworking"),
+		DisableGameStateNetworking,
+		TEXT("If true, AGameStateBase actors are not attached as Fusion networked sources (no MasterClient-owned global instance is created for the GameState)."),
+		ECVF_Default
+	);
 }
 
 

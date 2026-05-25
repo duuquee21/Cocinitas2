@@ -71,69 +71,47 @@ struct FKeyObjectId
 {
 	GENERATED_BODY()
 
-	FusionCore::PlayerId Origin{ 0 };
-	FusionCore::Map Map{ 0 };
-	uint32 Counter{ 0 };
+	uint64 Packed{ 0 };
 
 	FKeyObjectId() = default;
 
 	FKeyObjectId(const FusionCore::PlayerId OriginValue, const FusionCore::Map MapValue, const uint32 CounterValue)
-	{
-		Origin = OriginValue;
-		Map = MapValue;
-		Counter = CounterValue;
-	}
+		: Packed(static_cast<uint64>(OriginValue)
+		       | (static_cast<uint64>(MapValue)     << 16)
+		       | (static_cast<uint64>(CounterValue) << 32))
+	{}
 
 	// ReSharper disable once CppNonExplicitConvertingConstructor
 	FKeyObjectId(const FusionCore::ObjectId& ObjectId)
-	: Origin(ObjectId.Origin), Map(ObjectId.Map), Counter(ObjectId.Counter) {}
+		: Packed(static_cast<uint64>(ObjectId)) {}
+
+	explicit FKeyObjectId(const uint64& packed) : Packed(packed) {}
 
 	// ReSharper disable once CppNonExplicitConversionOperator
 	operator FusionCore::ObjectId() const
 	{
-		FusionCore::ObjectId Result;
-		Result.Origin = Origin;
-		Result.Map = Map;
-		Result.Counter = Counter;
-		return Result;
-	}
-
-	explicit FKeyObjectId(const uint64& packed)
-	{
-		Origin = static_cast<FusionCore::PlayerId>(packed & UINT16_MAX);
-		Map = static_cast<FusionCore::Map>((packed >> 16) & UINT16_MAX);
-		Counter = static_cast<uint32>(packed >> 32);
+		return FusionCore::ObjectId(static_cast<uint64_t>(Packed));
 	}
 
 	FKeyObjectId& operator=(const FusionCore::ObjectId& Other)
 	{
-		Origin = Other.Origin;
-		Map = Other.Map;
-		Counter = Other.Counter;
+		Packed = static_cast<uint64>(Other);
 		return *this;
 	}
 
-	bool IsNone() const { return Origin == 0 && Counter == 0 && Map == 0; }
-	bool IsSome() const { return Origin != 0 || Counter != 0 || Map != 0; }
+	bool IsNone() const { return Packed == 0; }
+	bool IsSome() const { return Packed != 0; }
 
-	bool operator==(const FKeyObjectId& Other) const
-	{
-		return Origin == Other.Origin && Map == Other.Map && Counter == Other.Counter;
-	}
-
-	bool operator!=(const FKeyObjectId& Other) const
-	{
-		return Origin != Other.Origin || Counter != Other.Counter;
-	}
+	bool operator==(const FKeyObjectId& Other) const { return Packed == Other.Packed; }
+	bool operator!=(const FKeyObjectId& Other) const { return Packed != Other.Packed; }
 
 	// ReSharper disable once CppNonExplicitConversionOperator
-	operator uint64() const;
+	operator uint64() const { return Packed; }
 };
 
 FORCEINLINE uint32 GetTypeHash(const FKeyObjectId& InId)
 {
-	uint64 compressed = InId;
-	return GetTypeHash(compressed);
+	return GetTypeHash(InId.Packed);
 }
 
 /**

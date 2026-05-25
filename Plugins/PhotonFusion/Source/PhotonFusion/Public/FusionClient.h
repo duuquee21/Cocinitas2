@@ -193,6 +193,7 @@ class PHOTONFUSION_API UFusionClient : public UObject
 	void TickInRoomAndRunningBeginFrame(double Dt);
 	void UpdateRemoteState(const FFusionObjectActorPair& Pair, const struct FPackagedSettings& Settings, const double Dt);
 	void TickInRoomAndRunningRemoveActors();
+	void ClearState();
 
 
 	void AddSpawnBlockedCls(UClass* InClass);
@@ -265,8 +266,8 @@ public:
 	void SendCustomRPC(const UObject* Source, const FString& EventName, uint64 RPCId, EFusionRPCTarget Target, const TArray<uint8>& Buffer, ERPCMode RPCMode);
 	
 	virtual ~UFusionClient() override;
-	FFusionObjectActorPair RegisterObject(UFusionActorComponent* Source, AActor* OwningActor, UObject* Object, FusionCore::Object* FusionObject, EFusionObjectPairType Type);
-	FFusionObjectActorPair RegisterRuntimeObject(UFusionActorComponent* Source, AActor* OwningActor, UObject* Object, FusionCore::Object* FusionObject, EFusionObjectPairType Type);
+	FFusionObjectActorPair& RegisterObject(UFusionActorComponent* Source, AActor* OwningActor, UObject* Object, FusionCore::Object* FusionObject, EFusionObjectPairType Type);
+	FFusionObjectActorPair& RegisterRuntimeObject(UFusionActorComponent* Source, AActor* OwningActor, UObject* Object, FusionCore::Object* FusionObject, EFusionObjectPairType Type);
 
 	void Tick(double Dt);
 	void TriggerLevelChanged(const FString& MapName, bool AttachCurrent = false);
@@ -284,9 +285,11 @@ public:
 	//
 	void AddActorSource(UFusionActorComponent* Source);
 
+	FFusionObjectActorPair DefaultPair{};
+	
 	FusionCore::ObjectId FindObjectId(const UObject* Object);
 	UObject* FindObject(FusionCore::ObjectId Id);
-	FFusionObjectActorPair FindObjectPair(FusionCore::ObjectId Id);
+	FFusionObjectActorPair& FindObjectPair(FusionCore::ObjectId Id);
 	FusionCore::Object* FindObject(const UObject* Object);
 	FusionCore::ObjectRoot* FindObjectRoot(const UObject* Actor);
 

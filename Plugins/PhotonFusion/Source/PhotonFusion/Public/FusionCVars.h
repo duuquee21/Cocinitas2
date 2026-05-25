@@ -7,4 +7,5 @@
 namespace FusionCVars
 {
 	extern int LoadMapBehaviourOverride;
+	extern bool DisableGameStateNetworking;
 }

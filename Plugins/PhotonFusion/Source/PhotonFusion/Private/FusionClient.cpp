@@ -81,11 +81,6 @@ static void ApplyFusionStreamingSkipFlags(UWorld* World)
 }
 
 
-FKeyObjectId::operator uint64() const
-{
-	return static_cast<uint64>(Origin) | static_cast<uint64>(Counter) << 32;
-}
-
 static EFusionObjectDestroyMode ToUnrealDestroyMode(FusionCore::DestroyModes Mode)
 {
 	switch (Mode)
@@ -142,12 +137,13 @@ void UFusionClient::AttachCurrentMap_Internal(UWorld* World)
 		//Delete any proxies from previously connected sessions.
 		for (auto Id : PairsToRemove)
 		{
-			auto Pair = FindObjectPair(Id);
+			const FFusionObjectActorPair& Pair = FindObjectPair(Id);
+			AActor* Actor = Pair.Actor;
 			RemoveObjectPairs(Id);
 
-			if (Pair.Actor)
+			if (Actor)
 			{
-				Pair.Actor->Destroy();
+				Actor->Destroy();
 			}
 		}
 	}
@@ -205,7 +201,7 @@ void UFusionClient::AttachCurrentMap_Internal(UWorld* World)
 				Source->Ownership = EFusionObjectOwnerFlags::PlayerAttached;
 			}
 
-			if (Actor->IsA(AGameStateBase::StaticClass()))
+			if (Actor->IsA(AGameStateBase::StaticClass()) && !FusionCVars::DisableGameStateNetworking)
 			{
 				if (!Source)
 				{
@@ -213,7 +209,7 @@ void UFusionClient::AttachCurrentMap_Internal(UWorld* World)
 					Source->bSkipAutoAttach = true;
 					Source->RegisterComponent();
 				}
-				
+
 				Source->Ownership = EFusionObjectOwnerFlags::MasterClient;
 			}
 			
@@ -253,7 +249,7 @@ void UFusionClient::AttachCurrentMap_Internal(UWorld* World)
 					continue;
 
 				//InitializeNewRemoteObjects above could potentially have made the object.
-				auto Pair = FindObjectPair(ObjectId);
+				const FFusionObjectActorPair& Pair = FindObjectPair(ObjectId);
 				if (Pair.IsValid())
 					continue;
 				
@@ -261,7 +257,7 @@ void UFusionClient::AttachCurrentMap_Internal(UWorld* World)
 
 				for (auto SubObjectId : RootObject->GetSubObjects())
 				{
-					FFusionObjectActorPair SubObjectPair = FindObjectPair(SubObjectId);
+					const FFusionObjectActorPair& SubObjectPair = FindObjectPair(SubObjectId);
 					if (SubObjectPair.IsValid()) //Check if we already have this connected
 						continue;
 
@@ -404,24 +400,24 @@ UFusionClient::~UFusionClient()
 	delete Client;
 }
 
-FFusionObjectActorPair UFusionClient::RegisterObject(UFusionActorComponent* Source, AActor* OwningActor, UObject* Object, FusionCore::Object* FusionObject, EFusionObjectPairType Type)
+FFusionObjectActorPair& UFusionClient::RegisterObject(UFusionActorComponent* Source, AActor* OwningActor, UObject* Object, FusionCore::Object* FusionObject, EFusionObjectPairType Type)
 {
 	if (Object == nullptr)
 	{
 		FUSION_LOG_WARN("Actor was null");
-		return {};
+		return DefaultPair;
 	}
 
 	if (FusionObject == nullptr)
 	{
 		FUSION_LOG_WARN("Obj was null");
-		return {};
+		return DefaultPair;
 	}
 
 	if (FusionObject->Type.Hash == 0)
 	{
 		FUSION_LOG_WARN("TypeRef is invalid");
-		return {};
+		return DefaultPair;
 	}
 	
 	//
@@ -431,7 +427,8 @@ FFusionObjectActorPair UFusionClient::RegisterObject(UFusionActorComponent* Sour
 	// not keep the object alive from GC pov.
 	FusionObject->Engine = Object;
 
-	FFusionObjectActorPair Pair = FFusionObjectActorPair{Type, OwningActor, Object, Source, FusionObject, FusionObject->Id };
+	const FusionCore::ObjectId Id = FusionObject->Id;
+	FFusionObjectActorPair& Pair = ObjectIdToPair.Emplace(Id, FFusionObjectActorPair{ Type, OwningActor, Object, Source, FusionObject, Id });
 
 	// Build property state mapping from type descriptor
 	if (const TStrongObjectPtr<UFusionTypeDescriptor>* DescPtr = Lookup->HashToDescriptor.Find(FusionObject->Type.Hash))
@@ -447,16 +444,13 @@ FFusionObjectActorPair UFusionClient::RegisterObject(UFusionActorComponent* Sour
 		}
 	}
 
-	if (ObjectIdToPair.Contains(FusionObject->Id))
+	if (ObjectIdToPair.Contains(Id))
 	{
 		FUSION_LOG("duplicate2");
 	}
-	// mapping for id => actor+obj pair, this has
-	// to be kept like this so that unreals garbage collector see it
-	ObjectIdToPair.Add(FusionObject->Id, Pair);
 
 	// mapping of AActor* to object Id
-	ObjectToObjectId.Add(Object, FusionObject->Id);
+	ObjectToObjectId.Add(Object, Id);
 
 	if (const UGameInstance* GameInstance = UGameplayStatics::GetGameInstance(CurrentWorld.Get()))
 	{
@@ -466,21 +460,24 @@ FFusionObjectActorPair UFusionClient::RegisterObject(UFusionActorComponent* Sour
 		}
 	}
 
-	return Pair;
+	// Broadcast above may have mutated ObjectIdToPair (subscribed Blueprints can
+	// spawn / destroy networked objects), invalidating Pair. Re-fetch.
+	FFusionObjectActorPair* Current = ObjectIdToPair.Find(Id);
+	return Current ? *Current : DefaultPair;
 }
 
-FFusionObjectActorPair UFusionClient::RegisterRuntimeObject(UFusionActorComponent* Source, AActor* OwningActor, UObject* Object, FusionCore::Object* FusionObject, EFusionObjectPairType Type)
+FFusionObjectActorPair& UFusionClient::RegisterRuntimeObject(UFusionActorComponent* Source, AActor* OwningActor, UObject* Object, FusionCore::Object* FusionObject, EFusionObjectPairType Type)
 {
 	if (Object == nullptr)
 	{
 		FUSION_LOG_WARN("Object was null");
-		return {};
+		return DefaultPair;
 	}
 
 	if (FusionObject == nullptr)
 	{
 		FUSION_LOG_WARN("Obj was null");
-		return {};
+		return DefaultPair;
 	}
 
 	FPropertyBuildOptions BuildOptions = UFusionTypeLookup::GetDefaultBuildOptions();
@@ -493,11 +490,13 @@ FFusionObjectActorPair UFusionClient::RegisterRuntimeObject(UFusionActorComponen
 	// store actor reference on object also, but this will
 	// not keep the object alive from GC pov.
 	FusionObject->Engine = Object;
-	
-	// mapping of AActor* to object Id
-	TempObjectToObjectId.Add(Object, FusionObject->Id);
 
-	FFusionObjectActorPair Pair = FFusionObjectActorPair{ Type, OwningActor, Object, Source, FusionObject, FusionObject->Id };
+	const FusionCore::ObjectId Id = FusionObject->Id;
+
+	// mapping of AActor* to object Id
+	TempObjectToObjectId.Add(Object, Id);
+
+	FFusionObjectActorPair& Pair = TempObjectIdToPair.Emplace(Id, FFusionObjectActorPair{ Type, OwningActor, Object, Source, FusionObject, Id });
 
 	// Build property state mapping from type descriptor
 	Pair.PropertyStates.Reserve(Desc->Properties.Num());
@@ -505,10 +504,6 @@ FFusionObjectActorPair UFusionClient::RegisterRuntimeObject(UFusionActorComponen
 	{
 		Prop->BuildState(Pair.PropertyStates);
 	}
-	
-	// mapping for id => actor+obj pair, this has
-	// to be kept like this so that unreals garbage collector see it
-	TempObjectIdToPair.Add(FusionObject->Id, Pair);
 
 	if (const UGameInstance* GameInstance = UGameplayStatics::GetGameInstance(CurrentWorld.Get()))
 	{
@@ -518,7 +513,10 @@ FFusionObjectActorPair UFusionClient::RegisterRuntimeObject(UFusionActorComponen
 		}
 	}
 
-	return Pair;
+	// Broadcast above may have mutated TempObjectIdToPair (subscribed Blueprints can
+	// spawn / destroy networked objects), invalidating Pair. Re-fetch.
+	FFusionObjectActorPair* Current = TempObjectIdToPair.Find(Id);
+	return Current ? *Current : DefaultPair;
 }
 
 void UFusionClient::SetMapState(EMapState NewMapState)
@@ -581,7 +579,13 @@ void UFusionClient::AttachMapActor(UFusionActorComponent* Source, const uint32 M
 		Source->SubscribeEvents(Client, Obj->Id);
 		
 		AActor* Actor = Cast<AActor>(BaseTypeData.Object.Get());
-		FFusionObjectActorPair Pair = RegisterObject(Source, Actor, BaseTypeData.Object.Get(), Obj, EFusionObjectPairType::Actor);
+		const FFusionObjectActorPair& InitialPair = RegisterObject(Source, Actor, BaseTypeData.Object.Get(), Obj, EFusionObjectPairType::Actor);
+		if (!InitialPair.Object)
+		{
+			FUSION_LOG_WARN("AttachMapActor: RegisterObject returned invalid pair for %s", *Owner->GetName());
+			return;
+		}
+		const FusionCore::ObjectId ParentObjectId = InitialPair.Object->Id;
 
 		PhotonCommon::StringType ObjectIdString = Obj->Id;
 		FUSION_LOG("Created Object Id: %s   Map: %d   WordCount:%llu  From: %s ",  UTF8_TO_TCHAR(ObjectIdString.c_str()), Obj->GetMap(), Obj->Words.Length, *BaseTypeData.Object->GetName());
@@ -633,7 +637,7 @@ void UFusionClient::AttachMapActor(UFusionActorComponent* Source, const uint32 M
 							RequiredObjects[RequiredObjectIndex++] = SubObject->Id;
 						}
 
-						FFusionObjectActorPair SubObjectPair = RegisterObject(Source, Actor, SubObjectTypeData.Object.Get(), SubObject, EFusionObjectPairType::Component);
+						FFusionObjectActorPair& SubObjectPair = RegisterObject(Source, Actor, SubObjectTypeData.Object.Get(), SubObject, EFusionObjectPairType::Component);
 						CopyLocalStateToObject(SubObjectPair);
 
 						PhotonCommon::StringType SubObjectIdString = SubObject->Id;
@@ -648,11 +652,11 @@ void UFusionClient::AttachMapActor(UFusionActorComponent* Source, const uint32 M
 				else
 				{
 					//Remote update already came in for object, we just need to update our registers.
-					FFusionObjectActorPair SubObjectPair = RegisterObject(Source, Actor, SubObjectTypeData.Object.Get(), ExistingSubObject, EFusionObjectPairType::Component);
+					FFusionObjectActorPair& SubObjectPair = RegisterObject(Source, Actor, SubObjectTypeData.Object.Get(), ExistingSubObject, EFusionObjectPairType::Component);
 					
 					FCopyContext SubObjectContext
 					{
-						SubObjectPair,
+						&SubObjectPair,
 						this,
 						Source->PackageSettings(),
 					};
@@ -664,12 +668,15 @@ void UFusionClient::AttachMapActor(UFusionActorComponent* Source, const uint32 M
 			}
 		}
 	
-		//
+		// Sibling RegisterObject calls in the subobject loop above can rehash
+		// ObjectIdToPair, so re-resolve the parent pair by id rather than reusing
+		// the reference returned from the initial RegisterObject.
+		FFusionObjectActorPair& Pair = FindObjectPair(ParentObjectId);
 		if (bExisting)
 		{
 			FCopyContext Context
 			{
-				Pair,
+				&Pair,
 				this,
 				Source->PackageSettings(),
 			};
@@ -745,12 +752,12 @@ void UFusionClient::AttachGlobalInstanceActor(UFusionActorComponent* Source, con
 										OwnerMode,
 										Flags))
 	{
-		FFusionObjectActorPair ObjectPair = RegisterObject(Source, nullptr, Object, Obj, EFusionObjectPairType::GlobalInstance);
+		FFusionObjectActorPair& ObjectPair = RegisterObject(Source, nullptr, Object, Obj, EFusionObjectPairType::GlobalInstance);
 		if (bExisting)
 		{
 			FCopyContext Context
 			{
-				ObjectPair,
+				&ObjectPair,
 				this,
 				FPackagedSettings{},
 			};
@@ -804,6 +811,11 @@ void UFusionClient::AttachSpawnedActor(UFusionActorComponent* Source, const uint
 	}
 	else if (Owner->IsA(AGameStateBase::StaticClass()))
 	{
+		if (FusionCVars::DisableGameStateNetworking)
+		{
+			return;
+		}
+
 		AttachGlobalInstanceActor(Source, Scene, Owner);
 		return;
 	}
@@ -820,7 +832,7 @@ void UFusionClient::AttachSpawnedActor(UFusionActorComponent* Source, const uint
 		Source->SubscribeEvents(Client, Obj->Id);
 
 		AActor* Actor = Cast<AActor>(BaseTypeData.Object.Get());
-		FFusionObjectActorPair ObjectPair = RegisterObject(Source, Actor, BaseTypeData.Object.Get(), Obj, EFusionObjectPairType::Actor);
+		FFusionObjectActorPair& ObjectPair = RegisterObject(Source, Actor, BaseTypeData.Object.Get(), Obj, EFusionObjectPairType::Actor);
 		CopyLocalStateToObject(ObjectPair);
 
 		PhotonCommon::StringType ObjectIdString = Obj->Id;
@@ -860,7 +872,7 @@ void UFusionClient::AttachSpawnedActor(UFusionActorComponent* Source, const uint
 						RequiredObjects[RequiredObjectIndex++] = SubObject->Id;
 					}
 
-					auto SubObjectPair = RegisterObject(Source, Actor, SubObjectTypeData.Object.Get(), SubObject, EFusionObjectPairType::Component);
+					FFusionObjectActorPair& SubObjectPair = RegisterObject(Source, Actor, SubObjectTypeData.Object.Get(), SubObject, EFusionObjectPairType::Component);
 					CopyLocalStateToObject(SubObjectPair);
 
 					PhotonCommon::StringType SubObjectIdString = SubObject->Id;
@@ -922,7 +934,7 @@ FusionCore::Object* UFusionClient::CreateCustomObject(const FCopyContext& Contex
 
 	if (ParentId.IsSome())
 	{
-		FFusionObjectActorPair ParentPair = FindObjectPair(ParentId);
+		const FFusionObjectActorPair& ParentPair = FindObjectPair(ParentId);
 		const FusionCore::TypeRef TypeRef = FusionCore::TypeRef{Descriptor->TypeHash, Descriptor->WordCount};
 		
 		TArray<FTypeData> TypesData{};
@@ -948,7 +960,10 @@ FusionCore::Object* UFusionClient::CreateCustomObject(const FCopyContext& Contex
 														 SubObjectId,
 														 {});
 		Client->AddSubObject(ParentObject, SubObject);
-		const FFusionObjectActorPair Pair = RegisterRuntimeObject(nullptr, ParentPair.Actor, Object, SubObject, EFusionObjectPairType::CustomObject);
+
+		UFusionActorComponent* ActorSettings = ParentPair.Actor ? ParentPair.Actor->GetComponentByClass<UFusionActorComponent>() : nullptr;
+		
+		const FFusionObjectActorPair& Pair = RegisterRuntimeObject(ActorSettings, ParentPair.Actor, Object, SubObject, EFusionObjectPairType::CustomObject);
 		const PhotonCommon::StringType ObjectIdString = SubObject->Id;
 		FUSION_LOG("Created Custom Object Id: %s   Object Hash: %d    WordCount:%llu  From: %s ",  UTF8_TO_TCHAR(ObjectIdString.c_str()), SubObjectHash,  SubObject->Words.Length, *Object->GetName());
 
@@ -1242,24 +1257,7 @@ void UFusionClient::UpdateRemoteObjectsActorState(const double Dt)
 			Pair.Actor->SetRole(ROLE_SimulatedProxy);
 		}
 
-		UFusionActorComponent* Settings{nullptr};
-		{
-			TRACE_CPUPROFILER_EVENT_SCOPE(FusionClient::BeginFrame::UpdateRemoteObjectsActorState::GetSettings);
-
-			if (FusionCore::ObjectChild* Child = FusionCore::ObjectChild::Cast(Pair.Object)) {
-				const FusionCore::ObjectId ParentId = FusionCore::ObjectId(FusionCore::ObjectChild::GetParent(Child));
-				if (const FFusionObjectActorPair ParentPair = FindObjectPair(ParentId); ParentPair.Actor) {
-					Settings = ParentPair.Actor->GetComponentByClass<UFusionActorComponent>();
-				}
-			}
-			else {
-				if (Pair.Actor) {
-					Settings = Pair.Actor->GetComponentByClass<UFusionActorComponent>();
-				}
-			}
-		}
-
-		const FPackagedSettings UpdateSettings = Settings ? Settings->PackageSettings() : FPackagedSettings{};
+		const FPackagedSettings UpdateSettings = Pair.Settings ? Pair.Settings->PackageSettings() : FPackagedSettings{};
 		UpdateRemoteState(Pair, UpdateSettings, Dt);
 	}
 }
@@ -1294,7 +1292,7 @@ void UFusionClient::UpdateRemoteState(const FFusionObjectActorPair& Pair, const 
 		TRACE_CPUPROFILER_EVENT_SCOPE(FusionClient::BeginFrame::UpdateRemoteObjectsActorState::CopyRemoteStateToObject);
 		FCopyContext Context
 		{
-			Pair,
+			&Pair,
 			this,
 			Settings,
 		};
@@ -1366,6 +1364,22 @@ void UFusionClient::TickInRoomAndRunningRemoveActors()
 	}
 }
 
+void UFusionClient::ClearState()
+{
+	if (!CurrentWorld.IsValid())
+	{
+		return;
+	}
+
+	for (auto& [_, Pair] : ObjectIdToPair)
+	{
+		if (Pair.Settings && (Pair.ObjectType == EFusionObjectPairType::Actor || Pair.ObjectType == EFusionObjectPairType::GlobalInstance))
+		{
+			Pair.Settings->ConsumePendingLocalStateCopy();
+		}
+	}
+}
+
 void UFusionClient::TickInRoomAndRunningEndFrame(const double Dt)
 {
 	if (!CurrentWorld.IsValid())
@@ -1427,11 +1441,23 @@ void UFusionClient::TickInRoomAndRunningEndFrame(const double Dt)
 			{
 				bool ShouldCopy = true;
 
-				if (Pair.Settings && Pair.Settings->LocalStateCopyMode == ELocalStateCopyMode::Manual)
+				if (Pair.ObjectType == EFusionObjectPairType::Actor || Pair.ObjectType == EFusionObjectPairType::GlobalInstance)
 				{
-					ShouldCopy = Pair.Settings->ConsumePendingLocalStateCopy();
+					if (Pair.Settings && Pair.Settings->LocalStateCopyMode == ELocalStateCopyMode::Manual)
+					{
+						ShouldCopy = Pair.Settings->AllowStateCopy();
+					}
 				}
+				else
+				{
+					const FFusionObjectActorPair& ParentPair = FindObjectPair(Root->Id);
 
+					if (ParentPair.Settings && ParentPair.Settings->LocalStateCopyMode == ELocalStateCopyMode::Manual)
+					{
+						ShouldCopy = ParentPair.Settings->AllowStateCopy();
+					}
+				}
+				
 				if (ShouldCopy)
 				{
 					if (Pair.Actor)
@@ -1446,7 +1472,7 @@ void UFusionClient::TickInRoomAndRunningEndFrame(const double Dt)
 							FUSION_LOG_ERROR("Invalid FusionNetDriver");
 						}
 					}
-
+					
 					CopyLocalStateToObject(Pair);
 				}
 
@@ -1536,7 +1562,9 @@ void UFusionClient::TickInRoomAndRunningEndFrame(const double Dt)
 
 							if (Client->AddSubObject(PairRoot, SubObject))
 							{
-								auto NewSubObjectPair = RegisterRuntimeObject(nullptr, Pair.Actor, SubObjectTypeData.Object.Get(), SubObject, EFusionObjectPairType::Component);
+								UFusionActorComponent* ActorSettings = Pair.Actor ? Pair.Actor->GetComponentByClass<UFusionActorComponent>() : nullptr;
+								
+								FFusionObjectActorPair& NewSubObjectPair = RegisterRuntimeObject(ActorSettings, Pair.Actor, SubObjectTypeData.Object.Get(), SubObject, EFusionObjectPairType::Component);
 								CopyLocalStateToObject(NewSubObjectPair);
 							}
 							else
@@ -1680,6 +1708,11 @@ void UFusionClient::Tick(const double Dt)
 			{
 				TRACE_CPUPROFILER_EVENT_SCOPE(FusionClient::Tick::RemoveActors);
 				TickInRoomAndRunningRemoveActors();
+			}
+
+			{
+				TRACE_CPUPROFILER_EVENT_SCOPE(FusionClient::Tick::ClearState);
+				ClearState();
 			}
 
 			break;
@@ -1835,7 +1868,12 @@ static void UpdateLocalWordStates(FPropertyWordState& State, const SharedMode::W
 
 void UFusionClient::CopyRemoteStateToObject(FCopyContext& Context, const FFusionObjectActorPair& Pair, const bool IsInitialUpdate)
 {
-	FusionCore::TypeRef TypeRef = Pair.Object->Type;
+	FusionCore::Object* const PairObject = Pair.Object;
+	UObject* const PairEngineObject = Pair.EngineObject;
+	FPropertyWordState* const PropertyStatesData = const_cast<FPropertyWordState*>(Pair.PropertyStates.GetData());
+	const int32 PropertyStatesNum = Pair.PropertyStates.Num();
+
+	FusionCore::TypeRef TypeRef = PairObject->Type;
 	const TStrongObjectPtr<UFusionTypeDescriptor> Desc = Lookup->HashToDescriptor.FindRef(TypeRef.Hash);
 
 	if (!Desc || !Desc->Type) {
@@ -1843,20 +1881,16 @@ void UFusionClient::CopyRemoteStateToObject(FCopyContext& Context, const FFusion
 		return;
 	}
 
-	UObject* Container;
+	UObject* Container = PairEngineObject;
 
 	bool bSkipPreNetReceive = false;
 	bool bSkipPostNetReceive = false;
-	
+
 	if (Desc->Type->IsChildOf(AActor::StaticClass())) {
-		Container = Pair.EngineObject;
-		
 		bSkipPreNetReceive = Context.Settings.bSkipPreNetReceive;
 		bSkipPostNetReceive = Context.Settings.bSkipPostNetReceive;
 	}
 	else if (Desc->Type->IsChildOf(UActorComponent::StaticClass())) {
-		Container = Pair.EngineObject;
-		
 		if (Container && Context.Settings.ActorSettings) {
 			if (Context.Settings.ActorSettings->ComponentsToSkipPreAndPostNetReceive.FindByPredicate([&Container](const FFusionComponentRef& ComponentRef)
 			{
@@ -1869,38 +1903,33 @@ void UFusionClient::CopyRemoteStateToObject(FCopyContext& Context, const FFusion
 		}
 	}
 	else {
-		Container = Pair.EngineObject;
-		
 		bSkipPreNetReceive = Context.Settings.bSkipPreNetReceive;
 		bSkipPostNetReceive = Context.Settings.bSkipPostNetReceive;
 	}
-	
+
 	if (Container)
 	{
 		if (!bSkipPreNetReceive) {
 			Container->PreNetReceive();
 		}
-		
-		bool IsRootTransform = (Pair.Object->EngineFlags & static_cast<uint32_t>(EObjectSpecialFlags::IsRootTransform)) != 0;
-		bool IgnoreRootTransformProperties = (Pair.Object->EngineFlags & static_cast<uint32_t>(EObjectSpecialFlags::IgnoreRootTransformProperties)) != 0;
 
-		const bool bHasMatchingStates = Pair.PropertyStates.Num() == Desc->Properties.Num();
-		// PropertyStates is a mutable bookkeeping cache (change-counts, previous-words snapshots)
-		// alongside the otherwise-const pair data, so cast away const for that access only.
-		TArray<FPropertyWordState>& PropertyStates = const_cast<TArray<FPropertyWordState>&>(Pair.PropertyStates);
+		const bool IsRootTransform = (PairObject->EngineFlags & static_cast<uint32_t>(EObjectSpecialFlags::IsRootTransform)) != 0;
+		const bool IgnoreRootTransformProperties = (PairObject->EngineFlags & static_cast<uint32_t>(EObjectSpecialFlags::IgnoreRootTransformProperties)) != 0;
+
+		const bool bHasMatchingStates = PropertyStatesNum == Desc->Properties.Num();
 
 		for (int32 Index = 0; Index < Desc->Properties.Num(); ++Index) {
 			const Property* Prop = Desc->Properties[Index];
-			check(Prop->WordOffset < Pair.Object->Words.Length);
+			check(Prop->WordOffset < PairObject->Words.Length);
 
-			SharedMode::Word* Current = Pair.Object->Words.Ptr + Prop->WordOffset;
+			SharedMode::Word* Current = PairObject->Words.Ptr + Prop->WordOffset;
 
 			//Track how many words changed since the last receive. We can't use the shadow buffer
 			//as a previous-state reference on the receive path, so each property carries its own
 			//snapshot in PropertyStates[Index].PreviousWords.
 			if (bHasMatchingStates)
 			{
-				FPropertyWordState& State = PropertyStates[Index];
+				FPropertyWordState& State = PropertyStatesData[Index];
 				UpdateReceivedWordStates(State, Current);
 			}
 
@@ -1914,9 +1943,9 @@ void UFusionClient::CopyRemoteStateToObject(FCopyContext& Context, const FFusion
 				}
 			}
 
-			Prop->CopyFrom(this, Context, Container, Current, Pair.Object->Shadow.Ptr + Prop->WordOffset);
+			Prop->CopyFrom(this, Context, Container, Current, PairObject->Shadow.Ptr + Prop->WordOffset);
 		}
-		
+
 		if (!bSkipPostNetReceive) {
 			Container->PostNetReceive();
 		}
@@ -1927,28 +1956,28 @@ void UFusionClient::CopyRemoteStateToObject(FCopyContext& Context, const FFusion
 		Container->PostRepNotifies();
 
 		//Object has completed a full state update.
-		Pair.Object->SetHasValidData();
+		PairObject->SetHasValidData();
 
 		//Checks if some other object has a dependency to the current one being updated.
-		if (DependencyChecks.Contains(Pair.Object->Id) && Context.bDoDependencyChecks)
+		if (DependencyChecks.Contains(PairObject->Id) && Context.bDoDependencyChecks)
 		{
-			for (FDeferredDependency& Dependency : DependencyChecks[Pair.Object->Id])
+			for (FDeferredDependency& Dependency : DependencyChecks[PairObject->Id])
 			{
 				FCopyContext DependencyContext
 				{
-					Dependency.Pair,
+					&Dependency.Pair,
 					this,
 					Context.Settings,
 					false, //Avoids recursive dependency resolves.
 				};
-				
+
 				//Fully Update the dependencies remote state data
 				CopyRemoteStateToObject(DependencyContext, Dependency.Pair, IsInitialUpdate);
-				FUSION_LOG("Resolved Dependency: %s Using Object Root: %s", *Dependency.Pair.EngineObject->GetName(), *Pair.EngineObject->GetName());
+				FUSION_LOG("Resolved Dependency: %s Using Object Root: %s", *Dependency.Pair.EngineObject->GetName(), *PairEngineObject->GetName());
 			}
 
 			//Remove before check to avoid infinite recursions.
-			DependencyChecks.Remove(Pair.Object->Id);
+			DependencyChecks.Remove(PairObject->Id);
 		}
 	}
 }
@@ -2073,7 +2102,7 @@ void UFusionClient::CopyLocalStateToObject(FFusionObjectActorPair& Pair)
 	if (Pair.EngineObject) {
 		FCopyContext Root
 		{
-			Pair,
+			&Pair,
 			this
 		};
 		
@@ -2115,7 +2144,7 @@ void UFusionClient::OnActorSpawned(AActor* SpawnedActor)
 		}
 	}
 
-	if (SpawnedActor->IsA(AGameStateBase::StaticClass()))
+	if (SpawnedActor->IsA(AGameStateBase::StaticClass()) && !FusionCVars::DisableGameStateNetworking)
 	{
 		if (UFusionActorComponent* SourceComp = SpawnedActor->GetComponentByClass<UFusionActorComponent>())
 		{
@@ -2184,12 +2213,13 @@ void UFusionClient::OnEngineObjectDestroyed(AActor* Actor)
 	FusionCore::ObjectId id = FindObjectId(Actor);
 	if (id.IsSome())
 	{
-		FFusionObjectActorPair Pair = FindObjectPair(id);
+		const FFusionObjectActorPair& Pair = FindObjectPair(id);
 		if (Pair.IsValid())
 		{
+			FusionCore::Object* Object = FusionCore::ObjectRoot::Cast(Pair.Object);
 			Pair.Settings->OnObjectDestroyed.Broadcast(EFusionObjectDestroyMode::Local);
 			
-			FusionCore::ObjectRoot* RootObject = FusionCore::ObjectRoot::Cast(Pair.Object);
+			FusionCore::ObjectRoot* RootObject = FusionCore::ObjectRoot::Cast(Object);
 			if (Client->DestroyObjectLocal(RootObject, true) == false)
 			{
 				FUSION_LOG_WARN("Engine destroyed actor %s which we don't have authority to destroy", *Actor->GetName());
@@ -2234,6 +2264,9 @@ void UFusionClient::UpdateOwnedActorAreaInterestKeys(TFunctionRef<uint64(const A
 
 void UFusionClient::UpdateGameState()
 {
+	if (FusionCVars::DisableGameStateNetworking)
+		return;
+	
 	auto WorldPtr = CurrentWorld.Get();
 	if (!WorldPtr)
 		return;
@@ -2296,7 +2329,7 @@ void UFusionClient::AddDependencyCheck(const FusionCore::ObjectId Id, const FCop
 		bool AddRoot = true;
 		for (FDeferredDependency& Dependency : DependencyChecks[Id])
 		{
-			if (Dependency.Pair.Object->Id == Root.Pair.Object->Id)
+			if (Dependency.Pair.Object->Id == Root.Pair->Object->Id)
 			{
 				AddRoot = false;
 				break;
@@ -2305,13 +2338,13 @@ void UFusionClient::AddDependencyCheck(const FusionCore::ObjectId Id, const FCop
 
 		if (AddRoot)
 		{
-			DependencyChecks[Id].Add({Root.Pair});
+			DependencyChecks[Id].Add({*Root.Pair});
 		}
 	}
 	else
 	{
 		TArray<FDeferredDependency> Dependencies;
-		Dependencies.Add({Root.Pair});
+		Dependencies.Add({*Root.Pair});
 
 		DependencyChecks.Add(Id, Dependencies);
 	}
@@ -2389,14 +2422,14 @@ UObject* UFusionClient::FindObject(const FusionCore::ObjectId Id)
 	return nullptr;
 }
 
-FFusionObjectActorPair UFusionClient::FindObjectPair(FusionCore::ObjectId Id)
+FFusionObjectActorPair& UFusionClient::FindObjectPair(FusionCore::ObjectId Id)
 {
-	if (const FFusionObjectActorPair* Result = ObjectIdToPair.Find(Id))
+	if (FFusionObjectActorPair* Result = ObjectIdToPair.Find(Id))
 	{
 		return *Result;
 	}
 
-	return FFusionObjectActorPair();
+	return DefaultPair;
 }
 
 FusionCore::Object* UFusionClient::FindObject(const UObject* Object)
@@ -2489,7 +2522,7 @@ void UFusionClient::CopyToBackBuffer(FFusionObjectActorPair& Pair)
 	{
 		FCopyContext Context
 		{
-			Pair,
+			&Pair,
 			this
 		};
 
@@ -2613,7 +2646,7 @@ bool UFusionClient::OnObjectCreatedFinalize(FusionCore::Object* Obj)
 			}
 
 			FusionCore::TypeRef BaseTypeRef = TypesData[0].TypeRef;
-			FFusionObjectActorPair Pair = RegisterObject(ActorSource, Actor, Actor, Obj, EFusionObjectPairType::Actor);
+			FFusionObjectActorPair& Pair = RegisterObject(ActorSource, Actor, Actor, Obj, EFusionObjectPairType::Actor);
 
 			//CopyLocalStateToObject(FFusionObjectActorPair{Actor, Actor, Actor->GetName(), Obj});
 			//Obj->CopyPluginReceivedWordsToLocalWordBuffer();
@@ -2628,7 +2661,7 @@ bool UFusionClient::OnObjectCreatedFinalize(FusionCore::Object* Obj)
 
 			FCopyContext Context
 			{
-				Pair,
+				&Pair,
 				this,
 				FusionComponent ? FusionComponent->PackageSettings() : FPackagedSettings{},
 			};
@@ -2637,7 +2670,11 @@ bool UFusionClient::OnObjectCreatedFinalize(FusionCore::Object* Obj)
 			CopyRemoteStateToObject(Context, Pair, true);
 
 			//2. Set initial shadow buffer value based on spawned in actor. This ensures we will only start diffing based on the initial state, otherwise there is a risk we will send all data when we start locally modifying a remote object.
-			CopyToBackBuffer(Pair);
+			// Re-fetch in case user OnRep handlers in CopyRemoteStateToObject mutated ObjectIdToPair.
+			if (FFusionObjectActorPair* Refreshed = ObjectIdToPair.Find(Obj->Id))
+			{
+				CopyToBackBuffer(*Refreshed);
+			}
 
 			FusionComponent->SubscribeEvents(Client, Obj->Id);
 			FusionComponent->OnObjectReady.Broadcast();
@@ -2645,7 +2682,7 @@ bool UFusionClient::OnObjectCreatedFinalize(FusionCore::Object* Obj)
 		}
 		else if (StartClass->IsChildOf(UActorComponent::StaticClass()))
 		{
-			if (FFusionObjectActorPair ParentPair = FindObjectPair(FusionCore::ObjectChild::GetParent(Obj)); ParentPair.Actor)
+			if (const FFusionObjectActorPair& ParentPair = FindObjectPair(FusionCore::ObjectChild::GetParent(Obj)); ParentPair.Actor)
 			{
 				FUSION_LOG("Getting Parent Object: %s", *ParentPair.Actor->GetName());
 				
@@ -2676,13 +2713,16 @@ bool UFusionClient::OnObjectCreatedFinalize(FusionCore::Object* Obj)
 					
 					if (FoundComponent)
 					{
-						FFusionObjectActorPair Pair = RegisterObject(nullptr, ParentPair.Actor, FoundComponent, Obj, EFusionObjectPairType::Component);
+						// Snapshot before RegisterObject — its Emplace into ObjectIdToPair
+						// can rehash and invalidate the ParentPair reference.
+						AActor* ParentActor = ParentPair.Actor;
+						UFusionActorComponent* ActorSettings = ParentActor->GetComponentByClass<UFusionActorComponent>();
 						
-						UFusionActorComponent* ActorSettings = ParentPair.Actor->GetComponentByClass<UFusionActorComponent>();
-
+						FFusionObjectActorPair& Pair = RegisterObject(ActorSettings, ParentActor, FoundComponent, Obj, EFusionObjectPairType::Component);
+						
 						FCopyContext Context
 						{
-							Pair,
+							&Pair,
 							this,
 							ActorSettings ? ActorSettings->PackageSettings() : FPackagedSettings{},
 						};
@@ -2691,7 +2731,11 @@ bool UFusionClient::OnObjectCreatedFinalize(FusionCore::Object* Obj)
 						CopyRemoteStateToObject(Context, Pair, true);
 
 						//2. Set initial shadow buffer value based on spawned in actor. This ensures we will only start diffing based on the initial state, otherwise there is a risk we will send all data when we start locally modifying a remote object.
-						CopyToBackBuffer(Pair);
+						// Re-fetch in case user OnRep handlers in CopyRemoteStateToObject mutated ObjectIdToPair.
+						if (FFusionObjectActorPair* Refreshed = ObjectIdToPair.Find(Obj->Id))
+						{
+							CopyToBackBuffer(*Refreshed);
+						}
 
 						if (AActor* Actor = FoundComponent->GetOwner()) {
 							UFusionPhysicsReplicationComponent* FusionPhysics = Cast<
@@ -2733,12 +2777,14 @@ bool UFusionClient::OnObjectCreatedFinalize(FusionCore::Object* Obj)
 				if (UObject* CreatedObject = NewObject<UObject>(ParentObject, StartClass))
 				{
 					FUSION_LOG("Created New Custom Object: %s", *CreatedObject->GetName());
+					AActor* ParentActor = Cast<AActor>(ParentObject);
+					UFusionActorComponent* ActorSettings = ParentActor ? ParentActor->GetComponentByClass<UFusionActorComponent>() : nullptr;
 					
-					FFusionObjectActorPair Pair = RegisterObject(nullptr, Cast<AActor>(ParentObject), CreatedObject, Obj, EFusionObjectPairType::CustomObject);
+					FFusionObjectActorPair& Pair = RegisterObject(ActorSettings, ParentActor, CreatedObject, Obj, EFusionObjectPairType::CustomObject);
 
 					FCopyContext Context
 					{
-						Pair,
+						&Pair,
 						this,
 						FPackagedSettings{},
 					};
@@ -2747,7 +2793,11 @@ bool UFusionClient::OnObjectCreatedFinalize(FusionCore::Object* Obj)
 					CopyRemoteStateToObject(Context, Pair, true);
 
 					//2. Set initial shadow buffer value based on spawned in actor. This ensures we will only start diffing based on the initial state, otherwise there is a risk we will send all data when we start locally modifying a remote object.
-					CopyToBackBuffer(Pair);
+					// Re-fetch in case user OnRep handlers in CopyRemoteStateToObject mutated ObjectIdToPair.
+					if (FFusionObjectActorPair* Refreshed = ObjectIdToPair.Find(Obj->Id))
+					{
+						CopyToBackBuffer(*Refreshed);
+					}
 				}
 			}
 		}
@@ -2813,14 +2863,17 @@ void UFusionClient::OnObjectDestroyed(const FusionCore::ObjectRoot* Obj, const F
 	{
 		if (Mode == FusionCore::DestroyModes::Remote || Mode == FusionCore::DestroyModes::Shutdown || Mode == FusionCore::DestroyModes::MapChange)
 		{
-			FFusionObjectActorPair Pair = FindObjectPair(Obj->Id);
+			const FFusionObjectActorPair& Pair = FindObjectPair(Obj->Id);
 			if (Pair.Actor)
 			{
+				AActor* Actor = Pair.Actor;
+				UFusionActorComponent* Settings = Pair.Settings.Get();
+
 				//will hit OnEngineObjectDestroyed, ensure we ignore that path when remote destroying.
-				RemoteDestroyedObjects.Add(Pair.Actor);
-				
-				Pair.Settings.Get()->OnObjectDestroyed.Broadcast(ToUnrealDestroyMode(Mode));
-				Pair.Actor->Destroy(true);
+				RemoteDestroyedObjects.Add(Actor);
+
+				Settings->OnObjectDestroyed.Broadcast(ToUnrealDestroyMode(Mode));
+				Actor->Destroy(true);
 			}
 			RemoveObjectRoot(Obj);
 		}
@@ -2829,17 +2882,20 @@ void UFusionClient::OnObjectDestroyed(const FusionCore::ObjectRoot* Obj, const F
 
 void UFusionClient::OnMapActorDestroyedRemote(uint32 SceneSequence, const FusionCore::ObjectId Id, const FusionCore::DestroyModes Mode)
 {
-	FFusionObjectActorPair Pair = FindObjectPair(Id);
-	
+	const FFusionObjectActorPair& Pair = FindObjectPair(Id);
+
 	if (Pair.IsValid())
 	{
 		if (Pair.Actor)
 		{
+			AActor* Actor = Pair.Actor;
+			UFusionActorComponent* Settings = Pair.Settings.Get();
+
 			//will hit OnEngineObjectDestroyed, ensure we ignore that path when remote destroying.
-			RemoteDestroyedObjects.Add(Pair.Actor);
-		
-			Pair.Settings.Get()->OnObjectDestroyed.Broadcast(ToUnrealDestroyMode(Mode));
-			Pair.Actor->Destroy(true);
+			RemoteDestroyedObjects.Add(Actor);
+
+			Settings->OnObjectDestroyed.Broadcast(ToUnrealDestroyMode(Mode));
+			Actor->Destroy(true);
 		}
 	}
 	else 
@@ -2974,7 +3030,7 @@ auto UFusionClient::OnRpcReceived(const FusionCore::Rpc& Rpc) -> void
 {
 	if (Rpc.TargetObject.IsSome())
 	{
-		FFusionObjectActorPair Pair = FindObjectPair(Rpc.TargetObject);
+		const FFusionObjectActorPair& Pair = FindObjectPair(Rpc.TargetObject);
 		if (Pair.IsValid())
 		{
 			if (const auto Desc = Lookup->FindClassDescriptor(Pair.EngineObject.GetClass()))
@@ -3123,7 +3179,7 @@ void UFusionClient::OnMapDestroy(UWorld* World)
 			continue;
 		}
 
-		FFusionObjectActorPair RootPair = FindObjectPair(Root->Id);
+		const FFusionObjectActorPair& RootPair = FindObjectPair(Root->Id);
 		if (RootPair.Actor && (Pair.Object->EngineFlags & static_cast<uint32_t>(EObjectSpecialFlags::SceneObject)) == 0)
 		{
 			//Do no destroy proxies. Should be handled in OnObjectDestroy

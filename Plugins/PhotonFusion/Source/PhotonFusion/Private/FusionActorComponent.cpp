@@ -142,11 +142,14 @@ void UFusionActorComponent::CopyLocalStateNextFrame()
 	bLocalStateCopyPending = true;
 }
 
-bool UFusionActorComponent::ConsumePendingLocalStateCopy()
+void UFusionActorComponent::ConsumePendingLocalStateCopy()
 {
-	const bool Requested = bLocalStateCopyPending;
 	bLocalStateCopyPending = false;
-	return Requested;
+}
+
+bool UFusionActorComponent::AllowStateCopy() const
+{
+	return bLocalStateCopyPending;
 }
 
 void UFusionActorComponent::ToggleNetworkSend(bool bToggle)

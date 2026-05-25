@@ -223,7 +223,7 @@ void Property::CopyTo(UFusionClient* Client, FCopyContext& Context, FPropertyWor
 					}
 				}
 
-				const FusionCore::StringHandle Handle = UFusionPropertyHelpers::EncodeString(Context.Pair.Object, PropertyState, Path, *ExistingHandle);
+				const FusionCore::StringHandle Handle = UFusionPropertyHelpers::EncodeString(Context.Pair->Object, PropertyState, Path, *ExistingHandle);
 				std::memcpy(Words, &Handle, sizeof(FusionCore::StringHandle));
 			}
 		}
@@ -247,7 +247,7 @@ void Property::CopyTo(UFusionClient* Client, FCopyContext& Context, FPropertyWor
 			}
 
 			const FusionCore::StringHandle* ExistingHandle = reinterpret_cast<FusionCore::StringHandle*>(Words);
-			const FusionCore::StringHandle Handle = UFusionPropertyHelpers::EncodeString(Context.Pair.Object, PropertyState, StoredString, *ExistingHandle);
+			const FusionCore::StringHandle Handle = UFusionPropertyHelpers::EncodeString(Context.Pair->Object, PropertyState, StoredString, *ExistingHandle);
 
 			Words[0] = Handle.id;
 			Words[1] = Handle.generation;
@@ -275,7 +275,7 @@ void Property::CleanupPreviousState(UFusionClient* Client, const FCopyContext& C
 			PropertyState.PropertyStateHash = 0;
 			
 			const FusionCore::StringHandle* ExistingHandle = reinterpret_cast<FusionCore::StringHandle*>(Words);
-			const FusionCore::StringHandle Handle = Context.Pair.Object->FreeString(*ExistingHandle);
+			const FusionCore::StringHandle Handle = Context.Pair->Object->FreeString(*ExistingHandle);
 			std::memcpy(Words, &Handle, sizeof(FusionCore::StringHandle)); //Make sure to wipe the state handle.
 		}
 		break;
@@ -429,7 +429,7 @@ bool Property::CopyFrom(UFusionClient* Client, FCopyContext& Context, void* Cont
 			FusionCore::StringHandle* ExistingHandle = reinterpret_cast<FusionCore::StringHandle*>(Words);
 
 			FusionCore::StringMessage OutStringStatus{};
-			const PhotonCommon::CharType* StringPtr = Context.Pair.Object->ResolveString(*ExistingHandle, OutStringStatus);
+			const PhotonCommon::CharType* StringPtr = Context.Pair->Object->ResolveString(*ExistingHandle, OutStringStatus);
 			EFusionEncodedStringStatus Status = UFusionPropertyHelpers::GetEncodedStringStatus(OutStringStatus);
 			
 			if (Status != EFusionEncodedStringStatus::Valid)
@@ -567,7 +567,7 @@ bool Property::CopyFrom(UFusionClient* Client, FCopyContext& Context, void* Cont
 			FusionCore::StringHandle* ExistingHandle = reinterpret_cast<FusionCore::StringHandle*>(Words);
 			
 			FusionCore::StringMessage OutStringStatus{};
-			const PhotonCommon::CharType* StringPtr = Context.Pair.Object->ResolveString(*ExistingHandle, OutStringStatus);
+			const PhotonCommon::CharType* StringPtr = Context.Pair->Object->ResolveString(*ExistingHandle, OutStringStatus);
 			const TStringConversion<TStringConvert<UTF8CHAR, TCHAR>> StringPtrAsTchar = StringCast<TCHAR>(reinterpret_cast<const UTF8CHAR*>(StringPtr));
 			EFusionEncodedStringStatus Status = UFusionPropertyHelpers::GetEncodedStringStatus(OutStringStatus);
 			
@@ -835,7 +835,7 @@ void ObjectProperty::CheckReleaseString(FCopyContext& Context, int* Words) const
 	{
 		int* StringTargetAddress = Words + 1;
 		const FusionCore::StringHandle* ExistingHandle = reinterpret_cast<FusionCore::StringHandle*>(StringTargetAddress);
-		FusionCore::StringHandle resultHandle = Context.Pair.Object->FreeString(*ExistingHandle);
+		FusionCore::StringHandle resultHandle = Context.Pair->Object->FreeString(*ExistingHandle);
 	}
 }
 
@@ -878,14 +878,14 @@ void ObjectProperty::CopyTo(UFusionClient* Client, FCopyContext& Context, FPrope
 				const FusionCore::StringHandle* ExistingHandle = reinterpret_cast<FusionCore::StringHandle*>(StringTargetAddress);
 
 				// If previous encoding was non-string (e.g. NetworkedObject), words contain ObjectId data, not a valid string handle.
-				if (!Context.Pair.Object->IsValidStringHandle(*ExistingHandle))
+				if (!Context.Pair->Object->IsValidStringHandle(*ExistingHandle))
 				{
 					Words[1] = 0;
 					Words[2] = 0;
 				}
 
 				const FString Path = SoftPath.ToString();
-				const FusionCore::StringHandle Handle = UFusionPropertyHelpers::EncodeString(Context.Pair.Object, PropertyState, Path, *ExistingHandle);
+				const FusionCore::StringHandle Handle = UFusionPropertyHelpers::EncodeString(Context.Pair->Object, PropertyState, Path, *ExistingHandle);
 				std::memcpy(StringTargetAddress, &Handle, sizeof(FusionCore::StringHandle));
 			}
 			else
@@ -943,13 +943,13 @@ void ObjectProperty::CopyTo(UFusionClient* Client, FCopyContext& Context, FPrope
 				const FusionCore::StringHandle* ExistingHandle = reinterpret_cast<FusionCore::StringHandle*>(TargetAddress);
 
 				// If previous encoding was non-string (e.g. NetworkedObject), words contain ObjectId data, not a valid string handle.
-				if (!Context.Pair.Object->IsValidStringHandle(*ExistingHandle))
+				if (!Context.Pair->Object->IsValidStringHandle(*ExistingHandle))
 				{
 					Words[1] = 0;
 					Words[2] = 0;
 				}
 
-				const FusionCore::StringHandle Handle = UFusionPropertyHelpers::EncodeString(Context.Pair.Object, PropertyState, ComponentPath, *ExistingHandle);
+				const FusionCore::StringHandle Handle = UFusionPropertyHelpers::EncodeString(Context.Pair->Object, PropertyState, ComponentPath, *ExistingHandle);
 				std::memcpy(TargetAddress, &Handle, sizeof(FusionCore::StringHandle));
 			}
 			else
@@ -1012,7 +1012,7 @@ void ObjectProperty::CopyTo(UFusionClient* Client, FCopyContext& Context, FPrope
 		const FusionCore::StringHandle* ExistingHandle = reinterpret_cast<FusionCore::StringHandle*>(StringTargetAddress);
 
 		// If previous encoding was non-string (e.g. NetworkedObject), words contain ObjectId data, not a valid string handle.
-		if (!Context.Pair.Object->IsValidStringHandle(*ExistingHandle))
+		if (!Context.Pair->Object->IsValidStringHandle(*ExistingHandle))
 		{
 			Words[1] = 0;
 			Words[2] = 0;
@@ -1023,7 +1023,7 @@ void ObjectProperty::CopyTo(UFusionClient* Client, FCopyContext& Context, FPrope
 			Words[0] = static_cast<int32>(EFusionEncodedObjectType::ClassPath);
 
 			const FString Path = TypeClass->GetPathName();
-			const FusionCore::StringHandle Handle = UFusionPropertyHelpers::EncodeString(Context.Pair.Object, PropertyState, Path, *ExistingHandle);
+			const FusionCore::StringHandle Handle = UFusionPropertyHelpers::EncodeString(Context.Pair->Object, PropertyState, Path, *ExistingHandle);
 			std::memcpy(StringTargetAddress, &Handle, sizeof(FusionCore::StringHandle));
 		}
 		else if (const UPackage* Package = TargetObject->GetOutermost())
@@ -1034,14 +1034,14 @@ void ObjectProperty::CopyTo(UFusionClient* Client, FCopyContext& Context, FPrope
 					Words[0] = static_cast<int32>(EFusionEncodedObjectType::BlueprintCDOClass);
 
 					const FString Path = TypeClass->GetPathName();
-					const FusionCore::StringHandle Handle = UFusionPropertyHelpers::EncodeString(Context.Pair.Object, PropertyState, Path, *ExistingHandle);
+					const FusionCore::StringHandle Handle = UFusionPropertyHelpers::EncodeString(Context.Pair->Object, PropertyState, Path, *ExistingHandle);
 					std::memcpy(StringTargetAddress, &Handle, sizeof(FusionCore::StringHandle));
 				}
 				else {
 					Words[0] = static_cast<int32>(EFusionEncodedObjectType::ObjectPath);
 
 					const FString Path = TargetObject->GetPathName();
-					const FusionCore::StringHandle Handle = UFusionPropertyHelpers::EncodeString(Context.Pair.Object, PropertyState, Path, *ExistingHandle);
+					const FusionCore::StringHandle Handle = UFusionPropertyHelpers::EncodeString(Context.Pair->Object, PropertyState, Path, *ExistingHandle);
 					std::memcpy(StringTargetAddress, &Handle, sizeof(FusionCore::StringHandle));
 				}
 			}
@@ -1222,7 +1222,7 @@ bool ObjectProperty::CopyFrom(UFusionClient* Client, FCopyContext& Context, void
 		memcpy(&Id, &Words[1], sizeof(FusionCore::ObjectId));
 
 		if (Id.IsSome()) {
-			if (FFusionObjectActorPair FoundPair = Client->FindObjectPair(Id); FoundPair.IsValid())
+			if (FFusionObjectActorPair& FoundPair = Client->FindObjectPair(Id); FoundPair.IsValid())
 			{
 				NewValue = FoundPair.EngineObject;
 			}
@@ -1242,14 +1242,14 @@ bool ObjectProperty::CopyFrom(UFusionClient* Client, FCopyContext& Context, void
 		FusionCore::StringHandle* ExistingHandle = reinterpret_cast<FusionCore::StringHandle*>(TargetAddress);
 			
 		FusionCore::StringMessage OutStringStatus{};
-		const PhotonCommon::CharType* StringPtr = Context.Pair.Object->ResolveString(*ExistingHandle, OutStringStatus);
+		const PhotonCommon::CharType* StringPtr = Context.Pair->Object->ResolveString(*ExistingHandle, OutStringStatus);
 		const TStringConversion<TStringConvert<UTF8CHAR, TCHAR>> StringPtrAsTchar = StringCast<TCHAR>(reinterpret_cast<const UTF8CHAR*>(StringPtr));
 		EFusionEncodedStringStatus Status = UFusionPropertyHelpers::GetEncodedStringStatus(OutStringStatus);
 			
 		if (Status != EFusionEncodedStringStatus::Valid)
 		{
 			FString StatusString = StaticEnum<EFusionEncodedStringStatus>()->GetDisplayNameTextByValue(static_cast<int64>(Status)).ToString();
-			FUSION_LOG_ERROR("Encoded string has error: %s   Object: %s", *StatusString, *Context.Pair.EngineObject->GetName());
+			FUSION_LOG_ERROR("Encoded string has error: %s   Object: %s", *StatusString, *Context.Pair->EngineObject->GetName());
 			return false;
 		}
 
@@ -1322,14 +1322,14 @@ bool ObjectProperty::CopyFrom(UFusionClient* Client, FCopyContext& Context, void
 		FusionCore::StringHandle* ExistingHandle = reinterpret_cast<FusionCore::StringHandle*>(TargetAddress);
 			
 		FusionCore::StringMessage OutStringStatus{};
-		const PhotonCommon::CharType* StringPtr = Context.Pair.Object->ResolveString(*ExistingHandle, OutStringStatus);
+		const PhotonCommon::CharType* StringPtr = Context.Pair->Object->ResolveString(*ExistingHandle, OutStringStatus);
 		const TStringConversion<TStringConvert<UTF8CHAR, TCHAR>> StringPtrAsTchar = StringCast<TCHAR>(reinterpret_cast<const UTF8CHAR*>(StringPtr));
 		EFusionEncodedStringStatus Status = UFusionPropertyHelpers::GetEncodedStringStatus(OutStringStatus);
 			
 		if (Status != EFusionEncodedStringStatus::Valid)
 		{
 			FString StatusString = StaticEnum<EFusionEncodedStringStatus>()->GetDisplayNameTextByValue(static_cast<int64>(Status)).ToString();
-			FUSION_LOG_ERROR("Encoded string has error: %s   Object: %s", *StatusString, *Context.Pair.EngineObject->GetName());
+			FUSION_LOG_ERROR("Encoded string has error: %s   Object: %s", *StatusString, *Context.Pair->EngineObject->GetName());
 			return false;
 		}
 
@@ -1366,13 +1366,13 @@ bool ObjectProperty::CopyFrom(UFusionClient* Client, FCopyContext& Context, void
 			FusionCore::StringHandle* ExistingHandle = reinterpret_cast<FusionCore::StringHandle*>(TargetAddress);
 
 			FusionCore::StringMessage OutStringStatus{};
-			const PhotonCommon::CharType* StringPtr = Context.Pair.Object->ResolveString(*ExistingHandle, OutStringStatus);
+			const PhotonCommon::CharType* StringPtr = Context.Pair->Object->ResolveString(*ExistingHandle, OutStringStatus);
 			EFusionEncodedStringStatus Status = UFusionPropertyHelpers::GetEncodedStringStatus(OutStringStatus);
 
 			if (Status != EFusionEncodedStringStatus::Valid)
 			{
 				FString StatusString = StaticEnum<EFusionEncodedStringStatus>()->GetDisplayNameTextByValue(static_cast<int64>(Status)).ToString();
-				FUSION_LOG_ERROR("Encoded string has error: %s   Object: %s", *StatusString, *Context.Pair.EngineObject->GetName());
+				FUSION_LOG_ERROR("Encoded string has error: %s   Object: %s", *StatusString, *Context.Pair->EngineObject->GetName());
 				return false;
 			}
 
@@ -1464,7 +1464,7 @@ void ObjectProperty::Deserialize(UFusionClient* Client, SharedMode::ReadBuffer& 
 		FusionCore::ObjectId Id = Buffer.ReadObjectId();
 
 		if (Id.IsSome()) {
-			if (const FFusionObjectActorPair FoundPair = Client->FindObjectPair(Id); FoundPair.IsValid())
+			if (const FFusionObjectActorPair& FoundPair = Client->FindObjectPair(Id); FoundPair.IsValid())
 			{
 				NewValue = FoundPair.EngineObject;
 			}

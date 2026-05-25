@@ -162,7 +162,8 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Fusion")
 	void CopyLocalStateNextFrame();
 
-	bool ConsumePendingLocalStateCopy();
+	void ConsumePendingLocalStateCopy();
+	bool AllowStateCopy() const;
 
 	UPROPERTY(EditAnywhere, Category = "Fusion")
 	TArray<FFusionComponentRef> ComponentsToSkipPreAndPostNetReceive;

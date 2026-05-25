@@ -84,7 +84,7 @@ class UFusionClient;
 
 struct FCopyContext
 {
-	FFusionObjectActorPair Pair;
+	const FFusionObjectActorPair* Pair{nullptr};
 	UFusionClient* FusionClient{nullptr};
 	FPackagedSettings Settings;
 	bool bDoDependencyChecks{true};
